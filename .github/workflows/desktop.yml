@@ -1,0 +1,68 @@
+name: Test and build desktop game
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GODOT_VERSION: 4.6.1
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Download verified Godot engine and templates
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
+          curl -fL --retry 3 "$base/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip" -o /tmp/godot.zip
+          curl -fL --retry 3 "$base/Godot_v${GODOT_VERSION}-stable_export_templates.tpz" -o /tmp/templates.tpz
+          echo 'cecd0cb6b55e931318a9d7237dc4197d69ea914966787a454808523626e2789f  /tmp/godot.zip' | sha256sum -c -
+          echo 'e6d372afd4fdfaae9571eb5e3568afcd96ce6db9a569244034154faf0ac69875  /tmp/templates.tpz' | sha256sum -c -
+          unzip -q /tmp/godot.zip -d /tmp/godot
+          chmod +x /tmp/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64
+          echo '/tmp/godot' >> "$GITHUB_PATH"
+          mkdir -p "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
+          unzip -q /tmp/templates.tpz 'templates/linux_release.x86_64' 'templates/windows_release_x86_64.exe' 'templates/macos.zip' 'templates/version.txt' -d /tmp/export
+          mv /tmp/export/templates/* "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable/"
+      - name: Import project
+        run: Godot_v${GODOT_VERSION}-stable_linux.x86_64 --headless --path . --editor --import --quit
+      - name: Gameplay integration tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          Godot_v${GODOT_VERSION}-stable_linux.x86_64 --headless --path . --audio-driver Dummy --fixed-fps 120 --script tests/gameplay.gd 2>&1 | tee /tmp/gameplay.log
+          ! grep -E 'SCRIPT ERROR|FAIL:|^ERROR:' /tmp/gameplay.log
+          Godot_v${GODOT_VERSION}-stable_linux.x86_64 --headless --path . --audio-driver Dummy --fixed-fps 120 --script tests/walkthrough.gd 2>&1 | tee /tmp/walkthrough.log
+          ! grep -E 'SCRIPT ERROR|FAIL:|^ERROR:' /tmp/walkthrough.log
+      - name: Export native builds
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p builds
+          Godot_v${GODOT_VERSION}-stable_linux.x86_64 --headless --path . --export-release Linux
+          Godot_v${GODOT_VERSION}-stable_linux.x86_64 --headless --path . --export-release Windows
+          Godot_v${GODOT_VERSION}-stable_linux.x86_64 --headless --path . --export-release macOS
+          chmod +x builds/basicdude-linux.x86_64
+          cp THIRD_PARTY_NOTICES.txt builds/
+          cp README.md builds/PLAY.md
+          tar -czf builds/basicdude-linux.tar.gz -C builds basicdude-linux.x86_64 THIRD_PARTY_NOTICES.txt PLAY.md
+          zip -j builds/basicdude-windows.zip builds/basicdude-windows.exe builds/THIRD_PARTY_NOTICES.txt builds/PLAY.md
+          zip -j builds/basicdude-macos.zip THIRD_PARTY_NOTICES.txt builds/PLAY.md
+      - name: Smoke test Linux export
+        run: builds/basicdude-linux.x86_64 --headless --audio-driver Dummy --quit-after 120
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: basicdude-desktop
+          path: |
+            builds/basicdude-linux.tar.gz
+            builds/basicdude-windows.zip
+            builds/basicdude-macos.zip
+          if-no-files-found: error
+          retention-days: 30
